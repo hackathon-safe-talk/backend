@@ -1,6 +1,6 @@
 # SafeTalk DRP — Backend
 
-**Digital Risk Protection platform for SQB Bank, Uzbekistan.**
+**Digital Risk Protection platform for GDG: Build with AI Hackathon, Uzbekistan.**
 
 SafeTalk DRP is a cybersecurity threat intelligence system that receives flagged SMS and Telegram messages from the SafeTalk on-device ML model, performs AI-powered deep analysis using Google Gemini, captures phishing website screenshots via headless Chromium, and provides a unified dashboard for the bank's security operations team.
 
@@ -163,4 +163,4 @@ open http://localhost:9001
 
 ## License
 
-This project was built for the SQB Bank Hackathon 2026.
+This project was built for the GDG: Build with AI Hackathon 2026.
