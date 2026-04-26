@@ -1,0 +1,143 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://safetalk:safetalk@postgres:5432/safetalk_drp
+      - DATABASE_URL_SYNC=postgresql+psycopg://safetalk:safetalk@postgres:5432/safetalk_drp
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-prod}
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-pro}
+      - REDIS_URL=redis://redis:6379/0
+      - CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
+      - MINIO_ACCESS_KEY=safetalk
+      - MINIO_SECRET_KEY=safetalk123
+      - MINIO_BUCKET=screenshots
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - CB_EMAIL=${CB_EMAIL:-cybersecurity@cbu.uz}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./app:/code/app
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  celery-worker:
+    build: .
+    command: celery -A app.celery_app:celery worker --loglevel=info --concurrency=2
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://safetalk:safetalk@postgres:5432/safetalk_drp
+      - DATABASE_URL_SYNC=postgresql+psycopg://safetalk:safetalk@postgres:5432/safetalk_drp
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-prod}
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-pro}
+      - REDIS_URL=redis://redis:6379/0
+      - CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
+      - MINIO_ACCESS_KEY=safetalk
+      - MINIO_SECRET_KEY=safetalk123
+      - MINIO_BUCKET=screenshots
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - CB_EMAIL=${CB_EMAIL:-cybersecurity@cbu.uz}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./app:/code/app
+
+  celery-beat:
+    build: .
+    command: celery -A app.celery_app:celery beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://safetalk:safetalk@postgres:5432/safetalk_drp
+      - DATABASE_URL_SYNC=postgresql+psycopg://safetalk:safetalk@postgres:5432/safetalk_drp
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-prod}
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-pro}
+      - REDIS_URL=redis://redis:6379/0
+      - CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
+      - MINIO_ACCESS_KEY=safetalk
+      - MINIO_SECRET_KEY=safetalk123
+      - MINIO_BUCKET=screenshots
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - CB_EMAIL=${CB_EMAIL:-cybersecurity@cbu.uz}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: safetalk
+      MINIO_ROOT_PASSWORD: safetalk123
+    command: server /data --console-address ":9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: safetalk
+      POSTGRES_PASSWORD: safetalk
+      POSTGRES_DB: safetalk_drp
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U safetalk -d safetalk_drp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  miniodata:
