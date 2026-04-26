@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     # Gemini (used when AI_PROVIDER=gemini) — uses REST API, no gRPC
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-pro"
+    GEMINI_MODEL: str = "gemini-2.0-flash"
 
     # Redis / Celery
     REDIS_URL: str = "redis://localhost:6379/0"

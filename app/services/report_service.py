@@ -102,13 +102,13 @@ def generate_incident_report(
         ["Maydon", "Qiymat"],
         ["Tahdid ID", str(threat.id)],
         ["Aniqlangan URL", threat.detected_url or "—"],
-        ["Manba", threat.source.value],
+        ["Manba", threat.source.value if hasattr(threat.source, 'value') else str(threat.source)],
         ["Risk ball", f"{threat.risk_score}/100"],
-        ["Label", threat.label.value],
+        ["Label", threat.label.value if hasattr(threat.label, 'value') else str(threat.label)],
         ["Jo'natuvchi", threat.sender_name or "—"],
         ["Ilova", threat.source_app or "—"],
         ["Aniqlangan sana", threat.received_at.strftime("%Y-%m-%d %H:%M UTC") if threat.received_at else "—"],
-        ["Holat", threat.status.value],
+        ["Holat", threat.status.value if hasattr(threat.status, 'value') else str(threat.status)],
     ]
 
     t = Table(threat_data, colWidths=[45 * mm, 120 * mm])

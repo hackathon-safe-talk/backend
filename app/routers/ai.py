@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-from app.deps import get_db, require_role
+from app.deps import get_db, require_role, rate_limit
 from app.models.admin_user import AdminUser, AdminRole
 from app.models.threat import Threat
 from app.models.ai_analysis import AIAnalysis
@@ -20,7 +20,7 @@ from app.services.audit_service import write_audit_log
 router = APIRouter()
 
 
-@router.post("/analyze", response_model=AIAnalysisResponse)
+@router.post("/analyze", response_model=AIAnalysisResponse, dependencies=[Depends(rate_limit(20, 60, "ai_analyze"))])
 async def trigger_analysis(
     body: AIAnalysisRequest,
     db: AsyncSession = Depends(get_db),

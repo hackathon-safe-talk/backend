@@ -1,8 +1,15 @@
-"""Domain scanner — detects typosquatting, homoglyph, and lookalike domains."""
+"""Domain scanner — detects typosquatting, homoglyph, and lookalike domains.
+
+Includes TLS certificate probing to detect self-signed and private CA certs
+that don't appear in public Certificate Transparency logs.
+"""
 
 import logging
 import re
+import ssl
+import socket
 import uuid
+from datetime import datetime, timezone
 from itertools import product
 
 import dns.resolver
@@ -36,6 +43,139 @@ SUSPICIOUS_TLDS = [
     "xyz", "top", "club", "icu", "buzz", "ml", "ga", "cf", "tk",
     "cam", "click", "link", "info", "online", "site", "website",
 ]
+
+
+# Well-known public Certificate Authorities — if issuer org is NOT in this list,
+# the cert is likely self-signed or from a private/internal CA.
+KNOWN_PUBLIC_CAS = {
+    "let's encrypt", "letsencrypt", "isrg",
+    "digicert", "geotrust", "thawte", "rapidssl",
+    "comodo", "sectigo",
+    "globalsign",
+    "godaddy", "starfield",
+    "amazon", "aws",
+    "google trust services", "google",
+    "microsoft", "azure",
+    "cloudflare",
+    "entrust",
+    "buypass",
+    "certum",
+    "ssl.com",
+    "zerossl",
+    "actalis",
+    "trustwave",
+    "symantec",  # legacy, still seen in some certs
+    "baltimore",  # CyberTrust, often in chains
+    "usertrust",
+    "verisign",
+}
+
+
+def probe_tls_certificate(domain: str, port: int = 443, timeout: float = 4.0) -> dict | None:
+    """Connect to a domain on port 443 and extract TLS certificate details.
+
+    Returns a dict with:
+        - issuer_org: str — the issuing CA organization name
+        - issuer_cn: str — the issuer common name
+        - subject_cn: str — the cert's subject common name
+        - not_before: datetime — cert valid-from date
+        - not_after: datetime — cert valid-to date
+        - is_self_signed: bool — True if subject == issuer
+        - is_private_ca: bool — True if issuer is not a known public CA
+        - serial_number: int
+
+    Returns None if connection fails or no cert is available.
+    """
+    import tempfile
+    import os
+
+    try:
+        # Use CERT_NONE so we can grab certs from self-signed / private CA sites
+        # that would fail normal verification.
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        with socket.create_connection((domain, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=domain) as tls_sock:
+                der_cert = tls_sock.getpeercert(binary_form=True)
+                if not der_cert:
+                    return None
+
+        # getpeercert() only returns the parsed dict when verify_mode != CERT_NONE,
+        # so we decode the DER binary using CPython's _test_decode_cert helper.
+        # Write DER to a temp file so _ssl._test_decode_cert can read it.
+        import ssl as _ssl
+
+        with tempfile.NamedTemporaryFile(suffix=".der", delete=False) as f:
+            f.write(der_cert)
+            tmp_path = f.name
+        try:
+            cert_dict = _ssl._test_decode_cert(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+
+        return _parse_cert_dict(cert_dict)
+
+    except (socket.timeout, socket.gaierror, ConnectionRefusedError,
+            ConnectionResetError, OSError, ssl.SSLError) as e:
+        logger.debug(f"[tls-probe] Could not probe {domain}:443 — {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"[tls-probe] Unexpected error probing {domain}: {e}")
+        return None
+
+
+def _parse_cert_dict(cert: dict) -> dict:
+    """Extract structured info from a parsed certificate dict."""
+    def _get_field(rdns: tuple, field: str) -> str:
+        """Extract a field from an RDN tuple-of-tuples structure."""
+        for rdn in rdns:
+            for attr_type, attr_value in rdn:
+                if attr_type == field:
+                    return attr_value
+        return ""
+
+    subject = cert.get("subject", ())
+    issuer = cert.get("issuer", ())
+
+    subject_cn = _get_field(subject, "commonName")
+    subject_org = _get_field(subject, "organizationName")
+    issuer_cn = _get_field(issuer, "commonName")
+    issuer_org = _get_field(issuer, "organizationName")
+
+    # Parse dates
+    not_before = None
+    not_after = None
+    try:
+        from ssl import cert_time_to_seconds
+        import time
+        if cert.get("notBefore"):
+            nb_ts = cert_time_to_seconds(cert["notBefore"])
+            not_before = datetime.fromtimestamp(nb_ts, tz=timezone.utc)
+        if cert.get("notAfter"):
+            na_ts = cert_time_to_seconds(cert["notAfter"])
+            not_after = datetime.fromtimestamp(na_ts, tz=timezone.utc)
+    except Exception:
+        pass
+
+    # Determine if self-signed (subject == issuer)
+    is_self_signed = (subject_cn == issuer_cn and subject_org == issuer_org)
+
+    # Determine if private CA — check issuer org against known public CAs
+    issuer_lower = (issuer_org or issuer_cn or "").lower()
+    is_private_ca = not any(ca in issuer_lower for ca in KNOWN_PUBLIC_CAS)
+
+    return {
+        "issuer_org": issuer_org or issuer_cn or "Unknown",
+        "issuer_cn": issuer_cn,
+        "subject_cn": subject_cn,
+        "not_before": not_before,
+        "not_after": not_after,
+        "is_self_signed": is_self_signed,
+        "is_private_ca": is_private_ca,
+        "serial_number": cert.get("serialNumber"),
+    }
 
 
 def generate_typosquats(domain: str) -> list[str]:
@@ -182,6 +322,12 @@ class DomainScanner(BaseScanner):
                         existing.status = DomainStatus.LIVE
                     elif not dns_resolved and existing.status == DomainStatus.LIVE:
                         existing.status = DomainStatus.DOWN
+                    # Update cert info on re-check
+                    if dns_resolved:
+                        re_cert = probe_tls_certificate(domain, timeout=4.0)
+                        if re_cert:
+                            existing.ssl_issuer = re_cert["issuer_org"]
+                            existing.ssl_issued_at = re_cert.get("not_before")
                     continue  # Don't create duplicate threats
 
                 # Determine similarity to brand
@@ -204,6 +350,32 @@ class DomainScanner(BaseScanner):
 
                 if tld in SUSPICIOUS_TLDS:
                     risk_score = min(100, risk_score + 10)
+
+                # ── TLS Certificate Probing ──────────────────────────
+                # Connect to port 443, grab the cert, check if it's from
+                # a known public CA. Self-signed and private CA certs
+                # don't appear in CT logs and are extra suspicious.
+                cert_info = None
+                if dns_resolved:
+                    cert_info = probe_tls_certificate(domain, timeout=4.0)
+
+                ssl_issuer_str = None
+                ssl_issued_at = None
+
+                if cert_info:
+                    ssl_issuer_str = cert_info["issuer_org"]
+                    ssl_issued_at = cert_info.get("not_before")
+
+                    if cert_info["is_self_signed"]:
+                        # Self-signed cert on a brand-lookalike domain = very suspicious
+                        risk_score = min(100, risk_score + 15)
+                        logger.info(f"[domain] {domain} has SELF-SIGNED cert — risk +15")
+                    elif cert_info["is_private_ca"]:
+                        # Private/unknown CA — not in CT logs
+                        risk_score = min(100, risk_score + 10)
+                        logger.info(f"[domain] {domain} has PRIVATE CA cert ({ssl_issuer_str}) — risk +10")
+                    else:
+                        logger.debug(f"[domain] {domain} cert issued by {ssl_issuer_str} (known public CA)")
 
                 # Check custom regex patterns
                 matched_pattern = None
@@ -229,6 +401,8 @@ class DomainScanner(BaseScanner):
                     matched_brand=closest_brand,
                     matched_pattern=matched_pattern,
                     similarity_score=round(similarity, 3),
+                    ssl_issuer=ssl_issuer_str,
+                    ssl_issued_at=ssl_issued_at,
                     first_seen_at=datetime.utcnow(),
                     last_checked_at=datetime.utcnow(),
                     check_count=1,
@@ -246,6 +420,12 @@ class DomainScanner(BaseScanner):
                         reasons.append(f"Shubhali TLD (.{tld}) ishlatilgan")
                     if matched_pattern:
                         reasons.append(f"Regex pattern mos keldi: {matched_pattern}")
+                    if cert_info and cert_info["is_self_signed"]:
+                        reasons.append("TLS sertifikat o'z-o'zidan imzolangan (self-signed) — CT loglarida ko'rinmaydi")
+                    elif cert_info and cert_info["is_private_ca"]:
+                        reasons.append(f"TLS sertifikat noma'lum/xususiy CA tomonidan berilgan: {cert_info['issuer_org']}")
+                    elif cert_info:
+                        reasons.append(f"TLS sertifikat: {cert_info['issuer_org']}")
 
                     threat = self.create_scanner_threat(
                         session,

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import engine, Base, async_session_factory
 from app.routers import ingest, threats, auth, ai, dashboard, devices, audit, tags, scanners, brand_assets, screenshot, report
+from app.services.rate_limit_service import is_rate_limited
 
 # Import all models so Base.metadata knows about them
 from app.models import Threat, Device, AdminUser, AIAnalysis, AuditLog  # noqa: F401
@@ -59,7 +60,7 @@ async def _seed_admin():
         )
         session.add(admin)
         await session.commit()
-        logger.info("[seed] Created admin user: admin@sqb.uz / SafeTalk2026!")
+        logger.info("[seed] Created default admin user")
 
 
 @asynccontextmanager
@@ -88,6 +89,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def global_rate_limit_middleware(request: Request, call_next):
+    """300 requests / minute per IP across all /api/v1/* routes."""
+    if request.url.path.startswith("/api/v1/"):
+        ip = request.client.host if request.client else "unknown"
+        if await is_rate_limited(f"rl:global:{ip}", 300, 60):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Please try again later."},
+                headers={"Retry-After": "60"},
+            )
+    return await call_next(request)
 
 # Public routes (no auth)
 app.include_router(ingest.router, prefix="/api/v1", tags=["Ingest"])

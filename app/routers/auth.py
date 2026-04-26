@@ -17,10 +17,27 @@ from app.services.auth_service import (
     decode_token,
 )
 from app.services.audit_service import write_audit_log
+from app.services.rate_limit_service import get_event_count, record_event
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_LOGIN_FAIL_LIMIT = 5
+_LOGIN_FAIL_WINDOW = 300  # 5 minutes
+
+
+async def _check_login_rate_limit(ip: str) -> None:
+    count = await get_event_count(f"rl:login_fail:{ip}", _LOGIN_FAIL_WINDOW)
+    if count >= _LOGIN_FAIL_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Please try again later.",
+        )
+
+
+async def _record_login_failure(ip: str) -> None:
+    await record_event(f"rl:login_fail:{ip}", _LOGIN_FAIL_WINDOW)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -29,6 +46,9 @@ async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    client_ip = request.client.host if request.client else "unknown"
+    await _check_login_rate_limit(client_ip)
+
     logger.info(f"Login attempt for email: {body.email}")
 
     result = await db.execute(
@@ -39,13 +59,13 @@ async def login(
 
     if not user:
         logger.warning(f"No user found for email: {body.email}")
+        await _record_login_failure(client_ip)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    logger.info(f"Password hash from DB: {user.password_hash[:30]}...")
     password_ok = verify_password(body.password, user.password_hash)
-    logger.info(f"Password verification result: {password_ok}")
 
     if not password_ok:
+        await _record_login_failure(client_ip)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     if not user.is_active:

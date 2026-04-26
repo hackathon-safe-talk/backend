@@ -96,15 +96,14 @@ async def _analyze_with_gemini(
     screenshot_bytes: bytes | None,
 ) -> str:
     """Call Gemini REST API directly (no gRPC / no native deps)."""
+    import asyncio
     import aiohttp
 
     api_key = settings.GEMINI_API_KEY
     model = settings.GEMINI_MODEL
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-    # Build parts
     parts: list[dict] = []
-
     if screenshot_bytes:
         parts.append({
             "inline_data": {
@@ -112,30 +111,44 @@ async def _analyze_with_gemini(
                 "data": base64.b64encode(screenshot_bytes).decode("utf-8"),
             }
         })
-
     parts.append({"text": user_text})
 
     payload = {
-        "system_instruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
-        },
-        "contents": [
-            {"role": "user", "parts": parts}
-        ],
-        "generationConfig": {
-            "maxOutputTokens": 2048,
-            "temperature": 0.2,
-        },
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.2},
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                raise RuntimeError(f"Gemini API error {resp.status}: {error_text}")
-            data = await resp.json()
+    for attempt in range(2):
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        raise RuntimeError("Gemini returned no candidates (likely blocked by safety filters)")
+                    return candidates[0]["content"]["parts"][0]["text"]
 
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+                error_body = await resp.json(content_type=None)
+                if resp.status == 429 and attempt == 0:
+                    # Honour the retry delay hint from the API response
+                    retry_delay = 15
+                    try:
+                        details = error_body.get("error", {}).get("details", [])
+                        for d in details:
+                            if d.get("@type", "").endswith("RetryInfo"):
+                                hint = d.get("retryDelay", "15s")
+                                retry_delay = int(hint.rstrip("s")) + 1
+                                break
+                    except Exception:
+                        pass
+                    logger.warning(f"Gemini 429 rate-limit hit, retrying in {retry_delay}s…")
+                    await asyncio.sleep(retry_delay)
+                    continue
+
+                raise RuntimeError(f"Gemini API error {resp.status}: {error_body}")
+
+    raise RuntimeError("Gemini API failed after retry")
 
 
 async def _analyze_with_claude(

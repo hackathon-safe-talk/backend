@@ -3,14 +3,15 @@
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import get_db
+from fastapi import Depends
+from app.deps import get_db, rate_limit
 from app.schemas.threat import BulkSyncRequest, BulkSyncResponse
 from app.services.threat_service import ingest_bulk
 
 router = APIRouter()
 
 
-@router.post("/threats/bulk", response_model=BulkSyncResponse)
+@router.post("/threats/bulk", response_model=BulkSyncResponse, dependencies=[Depends(rate_limit(120, 60, "ingest"))])
 async def bulk_sync(
     body: BulkSyncRequest,
     request: Request,

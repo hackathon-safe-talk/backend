@@ -84,6 +84,13 @@ async def check_threat_url(
     }
 
 
+# NOTE: This endpoint is intentionally public (no JWT auth) for two reasons:
+# 1. Object keys contain random UUIDs, making URLs unguessable.
+# 2. These images are rendered in <img> tags in the admin panel; browsers
+#    cannot attach Authorization headers to <img src="...">, so requiring
+#    JWT auth would break image display without a more complex token-in-URL
+#    or cookie-based scheme.  The security trade-off is acceptable given the
+#    UUID-based unguessability of the keys.
 @router.get("/screenshot-image/{object_key:path}")
 async def get_screenshot_image(object_key: str):
     """Proxy the screenshot image directly from MinIO.
